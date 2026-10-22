@@ -1,0 +1,7 @@
+*.o
+*.obj
+*.res
+*.log
+*.exe
+!SimpleClock.exe
+stage-test-data/

@@ -3059,6 +3059,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     windowClass.lpfnWndProc = WindowProc;
     windowClass.hInstance = instance;
     windowClass.lpszClassName = L"SimpleCountdownWindow";
+    windowClass.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(1));
     windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     RegisterClassW(&windowClass);
 

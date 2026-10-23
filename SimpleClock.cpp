@@ -3085,15 +3085,26 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         ShowContextMenu(false);
         return 0;
     }
-    case WM_HOTKEY:
+    case WM_HOTKEY: {
+        const bool fixedEight = wParam == kFixedHotkeyBase ||
+                                wParam == kFixedHotkeyBase + 1;
+        const bool fixedNine = wParam == kFixedHotkeyBase + 2 ||
+                               wParam == kFixedHotkeyBase + 3;
+        if ((fixedEight || fixedNine) && app.editing &&
+            GetForegroundWindow() == window) {
+            if (app.input.size() < 3) {
+                app.input.push_back(fixedEight ? L'8' : L'9');
+                Render();
+            }
+            return 0;
+        }
         if (wParam == kGlobalHotkeyBase) Start();
         else if (wParam == kGlobalHotkeyBase + 1) Pause();
         else if (wParam == kGlobalHotkeyBase + 2) Stop();
-        else if (wParam == kFixedHotkeyBase ||
-                 wParam == kFixedHotkeyBase + 1) StartAndShow();
-        else if (wParam == kFixedHotkeyBase + 2 ||
-                 wParam == kFixedHotkeyBase + 3) StopAndHide();
+        else if (fixedEight) StartAndShow();
+        else if (fixedNine) StopAndHide();
         return 0;
+    }
     case WM_MOUSEWHEEL: {
         POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
         ScreenToClient(window, &point);

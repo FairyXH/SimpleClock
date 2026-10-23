@@ -47,10 +47,12 @@ constexpr int kClearButtonBase = 4210;
 constexpr int kSaveButton = 4220;
 constexpr int kCancelButton = 4221;
 constexpr int kGlobalHotkeyBase = 4300;
-constexpr int kFixedHotkeyBase = 4400;
 constexpr UINT kAlarmMessage = WM_APP + 1;
 constexpr UINT kAudioErrorMessage = WM_APP + 2;
 constexpr UINT kTimerErrorMessage = WM_APP + 3;
+constexpr UINT kObservedDigitMessage = WM_APP + 5;
+constexpr UINT kObservedMouseMessage = WM_APP + 6;
+constexpr UINT kObservedClickMessage = WM_APP + 7;
 constexpr int kAlarmSampleRate = 24000;
 constexpr int kAlarmBytes = kAlarmSampleRate * 3 * sizeof(int16_t);
 constexpr char kRadarPcmBase64[] = R"RADAR(
@@ -1993,7 +1995,11 @@ struct App {
     std::array<Shortcut, 3> shortcuts{};
     std::array<Shortcut, 3> pendingShortcuts{};
     std::array<bool, 3> registeredShortcuts{};
-    std::array<bool, 4> registeredFixedHotkeys{};
+    HHOOK keyboardHook = nullptr;
+    HHOOK mouseHook = nullptr;
+    HANDLE keyboardThread = nullptr;
+    HANDLE keyboardReady = nullptr;
+    DWORD keyboardThreadId = 0;
     int captureShortcut = -1;
     int right = 0;
     int y = 0;
@@ -2207,23 +2213,103 @@ bool RegisterShortcuts(const std::array<Shortcut, 3>& shortcuts) {
     return true;
 }
 
-void UnregisterFixedHotkeys() {
-    for (int i = 0; i < 4; ++i) {
-        if (app.registeredFixedHotkeys[i])
-            UnregisterHotKey(app.window, kFixedHotkeyBase + i);
-        app.registeredFixedHotkeys[i] = false;
+LRESULT CALLBACK KeyboardObserver(int code, WPARAM message, LPARAM data) {
+    if (code == HC_ACTION) {
+        const auto* key = reinterpret_cast<const KBDLLHOOKSTRUCT*>(data);
+        const UINT keys[] = {'8', VK_NUMPAD8, '9', VK_NUMPAD9};
+        static bool held[4]{};
+        for (int i = 0; i < 4; ++i) {
+            if (key->vkCode != keys[i]) continue;
+            if (message == WM_KEYUP || message == WM_SYSKEYUP) {
+                held[i] = false;
+            } else if (message == WM_KEYDOWN || message == WM_SYSKEYDOWN) {
+                if (!held[i] &&
+                    !(GetAsyncKeyState(VK_CONTROL) & 0x8000) &&
+                    !(GetAsyncKeyState(VK_MENU) & 0x8000) &&
+                    !(GetAsyncKeyState(VK_SHIFT) & 0x8000) &&
+                    !(GetAsyncKeyState(VK_LWIN) & 0x8000) &&
+                    !(GetAsyncKeyState(VK_RWIN) & 0x8000)) {
+                    PostMessageW(app.window, kObservedDigitMessage,
+                                 i < 2 ? 8 : 9, 0);
+                }
+                held[i] = true;
+            }
+            break;
+        }
     }
+    return CallNextHookEx(nullptr, code, message, data);
 }
 
-bool RegisterFixedHotkeys() {
-    const UINT keys[] = {'8', VK_NUMPAD8, '9', VK_NUMPAD9};
-    for (int i = 0; i < 4; ++i) {
-        if (!RegisterHotKey(app.window, kFixedHotkeyBase + i,
-                            MOD_NOREPEAT, keys[i])) {
-            UnregisterFixedHotkeys();
-            return false;
+LRESULT CALLBACK MouseObserver(int code, WPARAM message, LPARAM data) {
+    if (code == HC_ACTION && app.window && IsWindowVisible(app.window)) {
+        const auto* mouse = reinterpret_cast<const MSLLHOOKSTRUCT*>(data);
+        RECT bounds{};
+        if (GetWindowRect(app.window, &bounds)) {
+            const bool inside = PtInRect(&bounds, mouse->pt) != 0;
+            if (message == WM_MOUSEMOVE) {
+                static bool lastInside = false;
+                if (inside != lastInside) {
+                    lastInside = inside;
+                    PostMessageW(app.window, kObservedMouseMessage, inside, 0);
+                }
+            } else if (message == WM_LBUTTONDOWN && inside &&
+                       WindowFromPoint(mouse->pt) != app.window) {
+                PostMessageW(app.window, kObservedClickMessage,
+                             static_cast<WPARAM>(mouse->pt.x),
+                             static_cast<LPARAM>(mouse->pt.y));
+            }
         }
-        app.registeredFixedHotkeys[i] = true;
+    }
+    return CallNextHookEx(nullptr, code, message, data);
+}
+
+DWORD WINAPI KeyboardObserverThread(void*) {
+    MSG message{};
+    PeekMessageW(&message, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
+    app.keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, KeyboardObserver,
+                                         GetModuleHandleW(nullptr), 0);
+    app.mouseHook = SetWindowsHookExW(WH_MOUSE_LL, MouseObserver,
+                                     GetModuleHandleW(nullptr), 0);
+    SetEvent(app.keyboardReady);
+    if (!app.keyboardHook || !app.mouseHook) {
+        if (app.keyboardHook) UnhookWindowsHookEx(app.keyboardHook);
+        if (app.mouseHook) UnhookWindowsHookEx(app.mouseHook);
+        app.keyboardHook = nullptr;
+        app.mouseHook = nullptr;
+        return 1;
+    }
+    while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
+    }
+    UnhookWindowsHookEx(app.keyboardHook);
+    UnhookWindowsHookEx(app.mouseHook);
+    app.keyboardHook = nullptr;
+    app.mouseHook = nullptr;
+    return 0;
+}
+
+void CloseKeyboardObserver() {
+    if (app.keyboardThread) {
+        PostThreadMessageW(app.keyboardThreadId, WM_QUIT, 0, 0);
+        WaitForSingleObject(app.keyboardThread, 5000);
+        CloseHandle(app.keyboardThread);
+        app.keyboardThread = nullptr;
+    }
+    if (app.keyboardReady) CloseHandle(app.keyboardReady);
+    app.keyboardReady = nullptr;
+}
+
+bool InitializeKeyboardObserver() {
+    app.keyboardReady = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!app.keyboardReady) return false;
+    app.keyboardThread = CreateThread(nullptr, 0, KeyboardObserverThread,
+                                      nullptr, 0, &app.keyboardThreadId);
+    if (!app.keyboardThread ||
+        WaitForSingleObject(app.keyboardReady, 5000) != WAIT_OBJECT_0 ||
+        !app.keyboardHook || !app.mouseHook) {
+        CloseKeyboardObserver();
+        return false;
     }
     return true;
 }
@@ -2356,7 +2442,7 @@ void Render() {
         Graphics graphics(memory);
         graphics.SetSmoothingMode(SmoothingModeAntiAlias);
         graphics.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
-        graphics.Clear(Color(1, 0, 0, 0));
+        graphics.Clear(Color(0, 0, 0, 0));
 
         const std::wstring label = app.finished ? L"时间到！" :
                                    std::to_wstring((app.remainingMs + 999) / 1000);
@@ -2985,6 +3071,23 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         else if (lParam == WM_LBUTTONUP || lParam == WM_LBUTTONDBLCLK)
             ShowCountdownWindow();
         return 0;
+    case kObservedMouseMessage:
+        if (app.hovering != (wParam != 0)) {
+            app.hovering = wParam != 0;
+            if (!app.hovering) app.editing = false;
+            Render();
+        }
+        return 0;
+    case kObservedClickMessage: {
+        if (!IsWindowVisible(window)) return 0;
+        POINT point{static_cast<LONG>(wParam), static_cast<LONG>(lParam)};
+        RECT bounds{};
+        GetWindowRect(window, &bounds);
+        if (!PtInRect(&bounds, point)) return 0;
+        if (app.editing) ApplyInput();
+        Start();
+        return 0;
+    }
     case WM_MOUSEMOVE: {
         if (app.dragArmed) {
             POINT cursor;
@@ -3086,25 +3189,16 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return 0;
     }
     case WM_HOTKEY: {
-        const bool fixedEight = wParam == kFixedHotkeyBase ||
-                                wParam == kFixedHotkeyBase + 1;
-        const bool fixedNine = wParam == kFixedHotkeyBase + 2 ||
-                               wParam == kFixedHotkeyBase + 3;
-        if ((fixedEight || fixedNine) && app.editing &&
-            GetForegroundWindow() == window) {
-            if (app.input.size() < 3) {
-                app.input.push_back(fixedEight ? L'8' : L'9');
-                Render();
-            }
-            return 0;
-        }
         if (wParam == kGlobalHotkeyBase) Start();
         else if (wParam == kGlobalHotkeyBase + 1) Pause();
         else if (wParam == kGlobalHotkeyBase + 2) Stop();
-        else if (fixedEight) StartAndShow();
-        else if (fixedNine) StopAndHide();
         return 0;
     }
+    case kObservedDigitMessage:
+        if (app.editing && GetForegroundWindow() == window) return 0;
+        if (wParam == 8) StartAndShow();
+        else if (wParam == 9) StopAndHide();
+        return 0;
     case WM_MOUSEWHEEL: {
         POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
         ScreenToClient(window, &point);
@@ -3143,7 +3237,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         CloseTiming();
         if (IsWindow(app.hotkeyWindow)) DestroyWindow(app.hotkeyWindow);
         UnregisterShortcuts();
-        UnregisterFixedHotkeys();
+        CloseKeyboardObserver();
         PostQuitMessage(0);
         return 0;
     }
@@ -3228,8 +3322,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         releaseInstance();
         return 1;
     }
-    if (!RegisterFixedHotkeys()) {
-        MessageBoxW(app.window, L"The fixed 8/9 shortcut is unavailable.",
+    if (!InitializeKeyboardObserver()) {
+        MessageBoxW(app.window, L"Unable to monitor keyboard and mouse input.",
                     L"Simple Countdown", MB_OK | MB_ICONERROR);
         DestroyWindow(app.window);
         CloseAudio();

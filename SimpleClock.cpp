@@ -10,6 +10,7 @@
 #include <mmsystem.h>
 #include <gdiplus.h>
 #include <commdlg.h>
+#include <shellapi.h>
 
 #include <algorithm>
 #include <array>
@@ -39,6 +40,8 @@ constexpr int kMaxSeconds = 999;
 constexpr int kMaxFontSize = 8000;
 constexpr UINT kMenuHotkeys = 4101;
 constexpr UINT kMenuExit = 4102;
+constexpr UINT kMenuShow = 4103;
+constexpr UINT kTrayMessage = WM_APP + 4;
 constexpr int kHotkeyButtonBase = 4200;
 constexpr int kClearButtonBase = 4210;
 constexpr int kSaveButton = 4220;
@@ -1983,6 +1986,9 @@ struct Shortcut {
 struct App {
     HWND window = nullptr;
     HWND hotkeyWindow = nullptr;
+    UINT taskbarCreated = 0;
+    bool trayVisible = false;
+    ULONGLONG lastTrayAttempt = 0;
     std::array<HWND, 3> hotkeyButtons{};
     std::array<Shortcut, 3> shortcuts{};
     std::array<Shortcut, 3> pendingShortcuts{};
@@ -2893,7 +2899,61 @@ void ShowHotkeySettings() {
     SetForegroundWindow(app.hotkeyWindow);
 }
 
+bool AddTrayIcon() {
+    app.lastTrayAttempt = GetTickCount64();
+    NOTIFYICONDATAW icon{};
+    icon.cbSize = sizeof(icon);
+    icon.hWnd = app.window;
+    icon.uID = 1;
+    icon.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    icon.uCallbackMessage = kTrayMessage;
+    icon.hIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1));
+    lstrcpynW(icon.szTip, L"SimpleClock", 128);
+    app.trayVisible = Shell_NotifyIconW(NIM_ADD, &icon) != FALSE;
+    return app.trayVisible;
+}
+
+void RemoveTrayIcon() {
+    if (!app.trayVisible) return;
+    NOTIFYICONDATAW icon{};
+    icon.cbSize = sizeof(icon);
+    icon.hWnd = app.window;
+    icon.uID = 1;
+    Shell_NotifyIconW(NIM_DELETE, &icon);
+    app.trayVisible = false;
+}
+
+void ShowContextMenu(bool trayMenu) {
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+    if (trayMenu) {
+        AppendMenuW(menu, MF_STRING, kMenuShow, L"Show window");
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    }
+    AppendMenuW(menu, MF_STRING, kMenuHotkeys, L"Hotkeys...");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, kMenuExit, L"Exit");
+    POINT cursor{};
+    GetCursorPos(&cursor);
+    SetForegroundWindow(app.window);
+    const UINT command = TrackPopupMenu(menu,
+        TPM_RETURNCMD | TPM_RIGHTBUTTON, cursor.x, cursor.y,
+        0, app.window, nullptr);
+    PostMessageW(app.window, WM_NULL, 0, 0);
+    DestroyMenu(menu);
+    if (command == kMenuShow) ShowCountdownWindow();
+    else if (command == kMenuHotkeys) {
+        if (trayMenu) ShowCountdownWindow();
+        ShowHotkeySettings();
+    } else if (command == kMenuExit) DestroyWindow(app.window);
+}
+
 LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
+    if (message == app.taskbarCreated && app.taskbarCreated) {
+        app.trayVisible = false;
+        AddTrayIcon();
+        return 0;
+    }
     switch (message) {
     case WM_CREATE:
         return SetTimer(window, 1, 50, nullptr) ? 0 : -1;
@@ -2915,6 +2975,14 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_TIMER:
         UpdateTime();
         if (app.editing) Render();
+        if (!app.trayVisible && GetTickCount64() - app.lastTrayAttempt >= 2000)
+            AddTrayIcon();
+        return 0;
+    case kTrayMessage:
+        if (lParam == WM_RBUTTONUP || lParam == WM_CONTEXTMENU)
+            ShowContextMenu(true);
+        else if (lParam == WM_LBUTTONUP || lParam == WM_LBUTTONDBLCLK)
+            ShowCountdownWindow();
         return 0;
     case WM_MOUSEMOVE: {
         if (app.dragArmed) {
@@ -3013,19 +3081,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_RBUTTONUP: {
         POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
         if (HitControl(point) != Control::Drag) return 0;
-        HMENU menu = CreatePopupMenu();
-        if (!menu) return 0;
-        AppendMenuW(menu, MF_STRING, kMenuHotkeys, L"Hotkeys...");
-        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, kMenuExit, L"Exit");
-        POINT cursor;
-        GetCursorPos(&cursor);
-        SetForegroundWindow(window);
-        const UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
-                                            cursor.x, cursor.y, 0, window, nullptr);
-        DestroyMenu(menu);
-        if (command == kMenuHotkeys) ShowHotkeySettings();
-        else if (command == kMenuExit) DestroyWindow(window);
+        ShowContextMenu(false);
         return 0;
     }
     case WM_HOTKEY:
@@ -3071,6 +3127,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         break;
     case WM_DESTROY:
         KillTimer(window, 1);
+        RemoveTrayIcon();
         CloseTiming();
         if (IsWindow(app.hotkeyWindow)) DestroyWindow(app.hotkeyWindow);
         UnregisterShortcuts();
@@ -3116,6 +3173,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     windowClass.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(1));
     windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     RegisterClassW(&windowClass);
+    app.taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
 
     RECT workArea{};
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
@@ -3167,6 +3225,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         releaseInstance();
         return 1;
     }
+    AddTrayIcon();
     Render();
     ShowWindow(app.window, SW_SHOWNORMAL);
     SetWindowPos(app.window, HWND_TOPMOST, WindowLeft(), app.y,

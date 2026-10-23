@@ -2909,7 +2909,8 @@ bool AddTrayIcon() {
     icon.uCallbackMessage = kTrayMessage;
     icon.hIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1));
     lstrcpynW(icon.szTip, L"SimpleClock", 128);
-    app.trayVisible = Shell_NotifyIconW(NIM_ADD, &icon) != FALSE;
+    app.trayVisible = Shell_NotifyIconW(NIM_ADD, &icon) != FALSE ||
+                      Shell_NotifyIconW(NIM_MODIFY, &icon) != FALSE;
     return app.trayVisible;
 }
 

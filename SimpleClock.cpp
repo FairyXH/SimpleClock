@@ -44,6 +44,7 @@ constexpr int kClearButtonBase = 4210;
 constexpr int kSaveButton = 4220;
 constexpr int kCancelButton = 4221;
 constexpr int kGlobalHotkeyBase = 4300;
+constexpr int kFixedHotkeyBase = 4400;
 constexpr UINT kAlarmMessage = WM_APP + 1;
 constexpr UINT kAudioErrorMessage = WM_APP + 2;
 constexpr UINT kTimerErrorMessage = WM_APP + 3;
@@ -1986,6 +1987,7 @@ struct App {
     std::array<Shortcut, 3> shortcuts{};
     std::array<Shortcut, 3> pendingShortcuts{};
     std::array<bool, 3> registeredShortcuts{};
+    std::array<bool, 4> registeredFixedHotkeys{};
     int captureShortcut = -1;
     int right = 0;
     int y = 0;
@@ -2176,6 +2178,12 @@ bool RegisterShortcuts(const std::array<Shortcut, 3>& shortcuts) {
     for (int i = 0; i < 3; ++i) {
         const Shortcut shortcut = shortcuts[i];
         if (!shortcut.key) continue;
+        if (shortcut.modifiers == 0 &&
+            (shortcut.key == '8' || shortcut.key == '9' ||
+             shortcut.key == VK_NUMPAD8 || shortcut.key == VK_NUMPAD9)) {
+            UnregisterShortcuts();
+            return false;
+        }
         for (int previous = 0; previous < i; ++previous) {
             if (shortcuts[previous].key == shortcut.key &&
                 shortcuts[previous].modifiers == shortcut.modifiers) {
@@ -2189,6 +2197,27 @@ bool RegisterShortcuts(const std::array<Shortcut, 3>& shortcuts) {
             return false;
         }
         app.registeredShortcuts[i] = true;
+    }
+    return true;
+}
+
+void UnregisterFixedHotkeys() {
+    for (int i = 0; i < 4; ++i) {
+        if (app.registeredFixedHotkeys[i])
+            UnregisterHotKey(app.window, kFixedHotkeyBase + i);
+        app.registeredFixedHotkeys[i] = false;
+    }
+}
+
+bool RegisterFixedHotkeys() {
+    const UINT keys[] = {'8', VK_NUMPAD8, '9', VK_NUMPAD9};
+    for (int i = 0; i < 4; ++i) {
+        if (!RegisterHotKey(app.window, kFixedHotkeyBase + i,
+                            MOD_NOREPEAT, keys[i])) {
+            UnregisterFixedHotkeys();
+            return false;
+        }
+        app.registeredFixedHotkeys[i] = true;
     }
     return true;
 }
@@ -2648,6 +2677,26 @@ void Stop() {
     Render();
 }
 
+void ShowCountdownWindow() {
+    ShowWindow(app.window, SW_SHOWNOACTIVATE);
+    SetWindowPos(app.window, HWND_TOPMOST, WindowLeft(), app.y,
+                 app.width, app.height,
+                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    Render();
+}
+
+void StartAndShow() {
+    ShowCountdownWindow();
+    Start();
+}
+
+void StopAndHide() {
+    Stop();
+    app.hovering = false;
+    app.editing = false;
+    ShowWindow(app.window, SW_HIDE);
+}
+
 void AdjustSeconds(int change) {
     UpdateTime();
     const int current = (app.remainingMs + 999) / 1000;
@@ -2983,6 +3032,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == kGlobalHotkeyBase) Start();
         else if (wParam == kGlobalHotkeyBase + 1) Pause();
         else if (wParam == kGlobalHotkeyBase + 2) Stop();
+        else if (wParam == kFixedHotkeyBase ||
+                 wParam == kFixedHotkeyBase + 1) StartAndShow();
+        else if (wParam == kFixedHotkeyBase + 2 ||
+                 wParam == kFixedHotkeyBase + 3) StopAndHide();
         return 0;
     case WM_MOUSEWHEEL: {
         POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
@@ -3021,6 +3074,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         CloseTiming();
         if (IsWindow(app.hotkeyWindow)) DestroyWindow(app.hotkeyWindow);
         UnregisterShortcuts();
+        UnregisterFixedHotkeys();
         PostQuitMessage(0);
         return 0;
     }
@@ -3097,6 +3151,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     }
     if (!InitializeTiming()) {
         MessageBoxW(app.window, L"Unable to initialize countdown timer.",
+                    L"Simple Countdown", MB_OK | MB_ICONERROR);
+        DestroyWindow(app.window);
+        CloseAudio();
+        GdiplusShutdown(gdiplusToken);
+        releaseInstance();
+        return 1;
+    }
+    if (!RegisterFixedHotkeys()) {
+        MessageBoxW(app.window, L"The fixed 8/9 shortcut is unavailable.",
                     L"Simple Countdown", MB_OK | MB_ICONERROR);
         DestroyWindow(app.window);
         CloseAudio();

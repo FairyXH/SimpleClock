@@ -6,7 +6,7 @@
 
 下载仓库中的 [SimpleClock.exe](SimpleClock.exe)，在 Windows 10/11 64 位系统上直接运行。程序无需安装，也不需要原始 MP3 文件。首次启动默认位于屏幕右上角，窗口约为屏幕宽高的十六分之一；同一时间只允许运行一个实例。
 
-如需退出，将鼠标移到窗口上，右键单击拖动按钮，选择 **Exit**。也可以在未编辑输入框时按 `Esc`。
+程序会在系统托盘显示图标。左键单击托盘图标可显示窗口；右键菜单可显示窗口、打开快捷键设置或退出。拖动按钮的右键菜单同样提供快捷键设置和退出。也可以在窗口未编辑输入框时按 `Esc` 退出。
 
 ## 操作
 
@@ -21,13 +21,14 @@
 - **设定秒数**：点击输入框，输入 `0`～`999`，按 `Enter`、单击拖动按钮或点击数字确认。鼠标在数字上滚动滚轮也能调整秒数。
 - **开始与结束**：单击数字开始倒计时。结束后第一次单击数字仅重置，第二次单击才开始。开始、暂停和结束按钮也可直接操作。
 - **移动与外观**：按住拖动按钮移动窗口；放大/缩小按钮调整数字和“时间到！”的字号，颜色按钮选择文字颜色。
-- **快捷键**：右键单击拖动按钮，选择 **Hotkeys...**，分别设置开始、暂停、结束的全局快捷键；每项都可以留空。若快捷键被其他程序占用，设置时会提示。
+- **固定全局热键**：主键盘或数字小键盘的 `8` 立即显示窗口并开始倒计时；`9` 重置倒计时并隐藏窗口。数字小键盘需开启 Num Lock。这四个热键不可修改，即使窗口隐藏也生效；它们会占用系统中的无修饰键 `8` 和 `9` 输入。
+- **自定义快捷键**：右键单击拖动按钮或托盘图标，选择 **Hotkeys...**，分别设置开始、暂停、结束的全局快捷键；每项都可以留空。若快捷键被其他程序占用，设置时会提示。
 
 鼠标移出窗口后，按钮和输入框全部隐藏，只保留数字或结束提示。窗口保持置顶。
 
 ## 配置与计时
 
-秒数、字号、颜色、位置和快捷键保存在 `%APPDATA%\SimpleClock\settings.ini`，修改后立即写入，重启后恢复。配置文件不随 EXE 存放；需要迁移设置时，可复制此文件到另一台电脑的相同位置。运行中的倒计时状态不会跨重启恢复。
+秒数、字号、颜色、位置和自定义快捷键保存在 `%APPDATA%\SimpleClock\settings.ini`，修改后立即写入，重启后恢复。固定的 `8` / `9` 热键不写入配置。配置文件不随 EXE 存放；需要迁移设置时，可复制此文件到另一台电脑的相同位置。运行中的倒计时状态不会跨重启恢复。
 
 程序使用 `QueryPerformanceCounter` 计算截止时间，由独立线程使用高精度等待计时器触发预载音频；不支持高精度等待计时器的系统会使用普通等待计时器。界面刷新和扬声器实际出声仍受 Windows 调度、音频驱动与输出设备影响，不能视为硬实时计时器。
 
@@ -39,7 +40,7 @@
 
 ```powershell
 windres -i SimpleClock.rc -o SimpleClock-res.o
-g++ -std=c++17 -O2 -Wall -Wextra -municode -mwindows -static -static-libgcc -static-libstdc++ SimpleClock.cpp SimpleClock-res.o -o SimpleClock.exe -lgdiplus -lwinmm -lcomdlg32 -lgdi32 -luser32
+g++ -std=c++17 -O2 -Wall -Wextra -municode -mwindows -static -static-libgcc -static-libstdc++ SimpleClock.cpp SimpleClock-res.o -o SimpleClock.exe -lgdiplus -lwinmm -lcomdlg32 -lgdi32 -luser32 -lshell32
 ```
 
 构建前先退出正在运行的 SimpleClock。程序逻辑及 3 秒铃声数据均在 `SimpleClock.cpp`，`SimpleClock.rc` 引用 `icon.ico`，并写入版本及版权信息。构建出的 EXE 静态链接 MinGW 运行库。
